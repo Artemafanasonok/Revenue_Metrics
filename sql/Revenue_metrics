@@ -1,0 +1,74 @@
+----------CTE----------
+with monthly_revenue as (
+	select  
+		user_id,
+		date(date_trunc('month', payment_date)) as payment_month,
+		sum(revenue_amount_usd) as total_revenue
+	from project.games_payments gp
+	group by payment_month, user_id
+	)
+,
+----------CTE----------
+calculated_months as (
+	select
+		user_id,
+		payment_month,
+		total_revenue,
+		date(payment_month - interval '1' month) as prev_calendar_month,
+		date(payment_month + interval '1' month) as next_calendar_month,
+		lag(total_revenue) over (partition by user_id order by payment_month) as prev_paid_month_rev,
+		lag(payment_month) over (partition by user_id order by payment_month) as prev_paid_month,
+		lead(payment_month) over (partition by user_id order by payment_month) as next_paid_month
+	from monthly_revenue
+	)
+,
+----------CTE----------
+calculated_metrics AS (
+    SELECT
+        user_id,
+        payment_month,
+        total_revenue,
+        CASE 
+            WHEN next_paid_month IS NULL
+                 OR next_paid_month != next_calendar_month
+            THEN next_calendar_month
+        END AS churn_month,
+        CASE 
+            WHEN next_paid_month IS NULL
+                 OR next_paid_month != next_calendar_month
+            THEN total_revenue
+        END AS churned_revenue,
+        CASE 
+            WHEN next_paid_month IS NULL
+                 OR next_paid_month != next_calendar_month
+            THEN 1
+        END AS churned_users,
+        CASE
+            WHEN prev_paid_month = prev_calendar_month
+                 AND total_revenue > prev_paid_month_rev
+            THEN total_revenue - prev_paid_month_rev
+        END AS expansion_mrr,
+        CASE 
+            WHEN prev_paid_month = prev_calendar_month
+                 AND total_revenue < prev_paid_month_rev
+            THEN total_revenue - prev_paid_month_rev
+        END AS contraction_mrr
+    FROM calculated_months
+)
+----------FINAL QUERY----------
+select 
+	cm.user_id,
+	cm.churn_month,
+	gpu.age,
+	gpu.game_name,
+	gpu.language,
+	gpu.has_older_device_model,
+	cm.payment_month,
+	cm.total_revenue,
+	cm.churned_revenue,
+	cm.churned_users,
+	cm.expansion_mrr,
+	cm.contraction_mrr
+from calculated_metrics cm
+left join games_paid_users gpu 
+	on cm.user_id = gpu.user_id;
